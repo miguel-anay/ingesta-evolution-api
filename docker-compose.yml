@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # WhatsApp Microservice
+  whatsapp-microservice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-microservice
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=3000
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-your-api-key}
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - LOG_LEVEL=INFO
+    depends_on:
+      - evolution-api
+      - redis
+      - rabbitmq
+    networks:
+      - whatsapp_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3000/api/v1/health/live')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Evolution API (WhatsApp Backend)
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_URL=http://localhost:8080
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-your-api-key}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_TTL=604800
+      - CACHE_LOCAL_ENABLED=false
+      - RABBITMQ_ENABLED=true
+      - RABBITMQ_URI=amqp://guest:guest@rabbitmq:5672/
+      - RABBITMQ_EXCHANGE_NAME=evolution_exchange
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_GLOBAL_EVENTS=true
+      - DATABASE_ENABLED=false
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=
+      - STORE_MESSAGES=true
+      - STORE_MESSAGE_UP=true
+      - STORE_CONTACTS=true
+      - STORE_CHATS=true
+      - CLEAN_STORE_MESSAGES=true
+      - CLEAN_STORE_MESSAGE_UP=true
+      - CLEAN_STORE_CONTACTS=true
+      - CLEAN_STORE_CHATS=true
+    depends_on:
+      - redis
+      - rabbitmq
+    networks:
+      - whatsapp_network
+    volumes:
+      - evolution_instances:/evolution/instances
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - whatsapp_network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: whatsapp-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - whatsapp_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  whatsapp_network:
+    driver: bridge
+
+volumes:
+  evolution_instances:
+  redis_data:
+  rabbitmq_data:
