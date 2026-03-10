@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -c:*)",
       "Bash(pip install:*)",
-      "Bash(python -m pytest:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(git:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

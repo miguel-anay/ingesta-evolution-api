@@ -919,13 +919,18 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
 
     def _extract_timestamp(self, message: Dict[str, Any]) -> datetime:
         """Extract timestamp from message."""
+        from datetime import timezone
+
         timestamp = message.get("messageTimestamp")
         if timestamp:
             try:
                 if isinstance(timestamp, (int, float)):
-                    return datetime.fromtimestamp(timestamp)
-                return datetime.fromisoformat(str(timestamp))
+                    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                dt = datetime.fromisoformat(str(timestamp))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
             except (ValueError, OSError):
                 pass
 
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)

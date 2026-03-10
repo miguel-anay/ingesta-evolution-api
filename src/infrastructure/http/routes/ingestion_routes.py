@@ -84,11 +84,13 @@ class IngestRequestSchema(BaseModel):
     )
     fecha_desde: Optional[datetime] = Field(
         None,
-        description="Only ingest messages after this date (ISO format, e.g. 2026-03-01T00:00:00)",
+        description="Only ingest messages after this date (e.g. 2026-03-01)",
+        json_schema_extra={"format": "date", "example": "2026-03-01"},
     )
     fecha_hasta: Optional[datetime] = Field(
         None,
-        description="Only ingest messages before this date (ISO format, e.g. 2026-03-06T23:59:59)",
+        description="Only ingest messages before this date (e.g. 2026-03-06)",
+        json_schema_extra={"format": "date", "example": "2026-03-06"},
     )
 
 

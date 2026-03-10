@@ -11,6 +11,7 @@
                         │  POST /api/v1/search/by-image│
                         │  POST /api/v1/search/by-text │
                         │  POST /api/v1/search/hybrid  │
+                        │  POST /api/v1/batch/process  │
                         │                              │
                         │  IAM Role: ec2-ingesta-role  │
                         └──────────┬───────────────────┘
@@ -22,22 +23,25 @@
               │ whatsapp- │  │  Titan   │  │  + pgvector │
               │ images    │  │ Multimod │  │  (RDS)      │
               └──────────┘  └──────────┘  └─────────────┘
-                    ▲              ▲              ▲
-                    │              │              │
-                    └──────────────┼──────────────┘
-                                   │
-                        ┌──────────┴───────────────────┐
-                        │     Lambda Function          │
-                        │  (whatsapp-batch-processor)  │
-                        │                              │
-                        │  1. Descarga imagen de S3    │
-                        │  2. Textract OCR             │
-                        │  3. Titan image embedding    │
-                        │  4. Titan text embedding     │
-                        │  5. Guarda en PostgreSQL     │
-                        │                              │
-                        │  IAM Role: lambda-batch-role │
-                        └──────────────────────────────┘
+                    ▲              ▲
+                    │              │
+                    └──────┬───────┘
+                           │
+                        ┌──┴───────────────────────────┐
+                        │     Lambda Function           │
+                        │  (whatsapp-batch-processor)   │
+                        │                               │
+                        │  1. Lista pendientes (API)    │
+                        │  2. Descarga imagen de S3     │
+                        │  3. Textract OCR              │
+                        │  4. Titan image embedding     │
+                        │  5. Titan text embedding      │
+                        │  6. Envía resultados (API)    │
+                        │                               │
+                        │  Conecta a EC2 via HTTP ──────┼──► EC2 FastAPI :3000
+                        │                               │
+                        │  IAM Role: lambda-batch-role  │
+                        └───────────────────────────────┘
                                    ▲
                                    │
                         ┌──────────┴───────────┐
@@ -189,12 +193,6 @@ aws iam create-policy \
         "Effect": "Allow",
         "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
         "Resource": "arn:aws:logs:*:*:*"
-      },
-      {
-        "Sid": "VPCAccess",
-        "Effect": "Allow",
-        "Action": ["ec2:CreateNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DeleteNetworkInterface"],
-        "Resource": "*"
       }
     ]
   }'
@@ -231,12 +229,16 @@ aws iam attach-role-policy \
 mkdir -p build/lambda
 
 docker run --rm -v $(pwd):/app -w /app python:3.11-slim bash -c "
-  pip install boto3 pydantic pydantic-settings sqlalchemy asyncpg pgvector -t build/lambda &&
+  apt-get update && apt-get install -y zip &&
+  pip install boto3 httpx pydantic -t build/lambda &&
   cp -r src/ build/lambda/src/ &&
   cd build/lambda &&
   zip -r ../lambda-package.zip . -x '*.pyc' '__pycache__/*'
 "
 ```
+
+> **Nota:** Lambda ya no conecta directamente a PostgreSQL. Se comunica con la FastAPI via HTTP
+> usando `httpx`, por lo que no necesita `sqlalchemy`, `asyncpg`, `pgvector` ni `pydantic-settings`.
 
 ---
 
@@ -252,7 +254,7 @@ aws lambda create-function \
   --timeout 900 \
   --memory-size 512 \
   --environment "Variables={
-    DATABASE_URL=postgresql://user:pass@tu-rds-host:5432/whatsapp_ingestion,
+    API_BASE_URL=http://<EC2_IP>:3000,
     S3_BUCKET_NAME=whatsapp-images-prod,
     S3_PREFIX=images/,
     S3_REGION=us-east-1,
@@ -265,6 +267,8 @@ aws lambda create-function \
 ```
 
 > El role se asigna directamente con `--role`. No se necesita instance profile ni paso adicional.
+>
+> **Importante:** Reemplaza `<EC2_IP>` con la IP pública de tu instancia EC2. Lambda NO necesita `--vpc-config` porque se comunica con la API via HTTP público, no accede directamente a la base de datos.
 
 ---
 
@@ -427,7 +431,6 @@ curl -X POST http://tu-ec2:3000/api/v1/search/hybrid \
 | Textract | Si | Si |
 | Bedrock InvokeModel | Si | Si |
 | CloudWatch Logs | No | Si |
-| VPC Network Interfaces | No | Si (si BD en VPC) |
 
 ---
 
@@ -805,19 +808,19 @@ aws logs tail /aws/lambda/whatsapp-batch-processor --follow
 │  │  │  t3.small        │────▶│  db.t3.micro          │  │    │
 │  │  │                  │     │  PostgreSQL 15         │  │    │
 │  │  │  Docker:         │     │  + pgvector            │  │    │
-│  │  │  - FastAPI :3000 │     │                        │  │    │
-│  │  │  - Evolution API │     │  DBs:                  │  │    │
-│  │  │  - Redis         │     │  - whatsapp_ingestion  │  │    │
-│  │  │                  │     │  - evolution            │  │    │
-│  │  │  IAM Role:       │     └──────────────────────┘  │    │
-│  │  │  ec2-ingesta     │                ▲              │    │
-│  │  └──────────────────┘                │              │    │
-│  │           │                          │              │    │
-│  │           ▼                          │              │    │
-│  │  ┌──────────────────┐     ┌──────────┴───────────┐  │    │
-│  │  │       S3         │     │      Lambda           │  │    │
-│  │  │  whatsapp-       │◀────│  batch-processor      │  │    │
-│  │  │  images-prod     │     │  512MB / 15min        │  │    │
+│  │  │  - FastAPI :3000 │◀──┐ │                        │  │    │
+│  │  │  - Evolution API │   │ │  DBs:                  │  │    │
+│  │  │  - Redis         │   │ │  - whatsapp_ingestion  │  │    │
+│  │  │                  │   │ │  - evolution            │  │    │
+│  │  │  IAM Role:       │   │ └──────────────────────┘  │    │
+│  │  │  ec2-ingesta     │   │                           │    │
+│  │  └──────────────────┘   │ (HTTP)                    │    │
+│  │           │             │                           │    │
+│  │           ▼             │                           │    │
+│  │  ┌──────────────────┐   │ ┌──────────────────────┐  │    │
+│  │  │       S3         │   │ │      Lambda           │  │    │
+│  │  │  whatsapp-       │◀──┼─│  batch-processor      │  │    │
+│  │  │  images-prod     │   └─│  512MB / 15min        │  │    │
 │  │  └──────────────────┘     │                        │  │    │
 │  │                           │  IAM Role:             │  │    │
 │  │  ┌──────────────────┐     │  lambda-batch          │  │    │
@@ -832,6 +835,9 @@ aws logs tail /aws/lambda/whatsapp-batch-processor --follow
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+> **Nota:** Lambda NO conecta directamente a RDS. Se comunica con la FastAPI en EC2 via HTTP
+> para obtener imágenes pendientes y enviar resultados de procesamiento (OCR + embeddings).
 
 ## Costos mensuales estimados
 
