@@ -19,6 +19,7 @@ from .infrastructure.http.routes import (
     health_router,
     ingestion_router,
     search_router,
+    batch_router,
 )
 from .infrastructure.http.webhooks import webhook_router
 from .infrastructure.http.middleware import (
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router, prefix="/api/v1")
     app.include_router(ingestion_router, prefix="/api/v1")
     app.include_router(search_router, prefix="/api/v1")
+    app.include_router(batch_router, prefix="/api/v1")
 
     return app
 

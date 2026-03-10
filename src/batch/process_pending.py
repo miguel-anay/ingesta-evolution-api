@@ -1,31 +1,31 @@
 """
-Batch Processor for Pending Images
+Batch Processor for Pending Images (Lambda version)
 
-Processes all pending images using AWS Textract (OCR) + Titan (embeddings).
+Calls the FastAPI microservice API instead of connecting directly to the database.
 
-For each pending image:
-1. Download from S3
-2. Run OCR via AWS Textract
-3. Generate Titan image embedding (1024 dims)
-4. Generate Titan text embedding (if OCR text is non-empty)
-5. Mark as completed
+Flow:
+1. GET /api/v1/batch/pending → get pending images
+2. For each image:
+   a. Download from S3
+   b. Run OCR via AWS Textract
+   c. Generate Titan image embedding (1024 dims)
+   d. Generate Titan text embedding (if OCR text is non-empty)
+   e. PATCH /api/v1/batch/{id}/complete → save results via API
 
 Usage:
     python -m src.batch.process_pending
 
 Designed to run as:
-- Local: docker-compose run --rm batch-processor
-- AWS:   Lambda function triggered by EventBridge (cron)
+- AWS Lambda function triggered by EventBridge (cron)
 """
 
 import asyncio
 import logging
-import sys
+import os
 import time
 
-from ..config.settings import get_settings
-from ..infrastructure.persistence.database import DatabaseManager
-from ..infrastructure.persistence.repositories.postgres_metadata_repository import PostgresMetadataRepository
+import httpx
+
 from ..infrastructure.storage.s3_image_storage import S3ImageStorageAdapter
 from ..infrastructure.vectorization.titan_adapter import TitanVectorizerAdapter
 from ..infrastructure.ocr.textract_adapter import TextractOcrAdapter
@@ -34,39 +34,45 @@ from ..infrastructure.ocr.textract_adapter import TextractOcrAdapter
 logger = logging.getLogger(__name__)
 
 
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:3000")
+
+
 async def process_pending() -> dict:
     """Process all pending images: Textract OCR + Titan embeddings.
 
+    Communicates with the FastAPI microservice via HTTP API
+    instead of connecting directly to the database.
+
     Returns a summary dict suitable for Lambda response.
     """
-    settings = get_settings()
     start_time = time.time()
 
-    # Build infrastructure
-    db_manager = DatabaseManager(settings.database_url)
-    repo = PostgresMetadataRepository(db_manager)
+    # Build infrastructure (S3, Textract, Titan — direct AWS API calls)
     s3 = S3ImageStorageAdapter(
-        bucket_name=settings.s3_bucket_name,
-        prefix=settings.s3_prefix,
-        region=settings.s3_region,
-        endpoint_url=settings.s3_endpoint_url,
-        access_key_id=settings.s3_access_key_id,
-        secret_access_key=settings.s3_secret_access_key,
+        bucket_name=os.environ.get("S3_BUCKET_NAME", "whatsapp-images-prod"),
+        prefix=os.environ.get("S3_PREFIX", "images/"),
+        region=os.environ.get("S3_REGION", "us-east-1"),
     )
 
     ocr_adapter = None
-    if settings.ocr_enabled:
-        ocr_adapter = TextractOcrAdapter(region=settings.textract_region)
-
-    titan_adapter = None
-    if settings.embeddings_enabled:
-        titan_adapter = TitanVectorizerAdapter(
-            region=settings.bedrock_region,
-            model_id=settings.titan_model_id,
+    if os.environ.get("OCR_ENABLED", "true").lower() == "true":
+        ocr_adapter = TextractOcrAdapter(
+            region=os.environ.get("TEXTRACT_REGION", "us-east-1"),
         )
 
-    # Fetch pending records
-    pending = await repo.get_pending()
+    titan_adapter = None
+    if os.environ.get("EMBEDDINGS_ENABLED", "true").lower() == "true":
+        titan_adapter = TitanVectorizerAdapter(
+            region=os.environ.get("BEDROCK_REGION", "us-east-1"),
+            model_id=os.environ.get("TITAN_MODEL_ID", "amazon.titan-embed-image-v1"),
+        )
+
+    # Fetch pending records from API
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30.0) as client:
+        response = await client.get("/api/v1/batch/pending")
+        response.raise_for_status()
+        pending = response.json()
+
     total = len(pending)
     logger.info(f"Found {total} pending images to process")
 
@@ -77,59 +83,67 @@ async def process_pending() -> dict:
     completed = 0
     failed = 0
 
-    for record in pending:
-        record_id = record.id
-        s3_key = record.s3_key
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=60.0) as client:
+        for record in pending:
+            record_id = record["id"]
+            s3_key = record["s3_key"]
 
-        try:
-            # Mark as processing
-            await repo.update_processing_status(record_id, "processing")
-
-            # Download image from S3
-            logger.info(f"[{record_id}] Downloading from S3: {s3_key}")
-            image_data = await s3.download_image(s3_key)
-
-            # OCR via Textract
-            ocr_text = ""
-            if ocr_adapter:
-                try:
-                    ocr_result = await ocr_adapter.extract_text(image_data)
-                    ocr_text = str(ocr_result)
-                    await repo.update_ocr_text(record_id, ocr_text)
-                    logger.info(f"[{record_id}] Textract OCR done, text_length={len(ocr_text)}")
-                except Exception as e:
-                    logger.warning(f"[{record_id}] Textract OCR failed (non-fatal): {e}")
-
-            # Titan image embedding
-            if titan_adapter:
-                try:
-                    image_embedding = await titan_adapter.embed_image(image_data)
-                    await repo.update_image_embedding(record_id, image_embedding.to_list())
-                    logger.info(f"[{record_id}] Titan image embedding saved (1024 dims)")
-                except Exception as e:
-                    logger.warning(f"[{record_id}] Titan image embedding failed (non-fatal): {e}")
-
-                # Titan text embedding (only if OCR text is non-empty)
-                if ocr_text.strip():
-                    try:
-                        text_embedding = await titan_adapter.embed_text(ocr_text)
-                        await repo.update_text_embedding(record_id, text_embedding.to_list())
-                        logger.info(f"[{record_id}] Titan text embedding saved (1024 dims)")
-                    except Exception as e:
-                        logger.warning(f"[{record_id}] Titan text embedding failed (non-fatal): {e}")
-
-            # Mark completed
-            await repo.update_processing_status(record_id, "completed")
-            completed += 1
-            logger.info(f"[{record_id}] Completed ({completed}/{total})")
-
-        except Exception as e:
-            failed += 1
-            logger.error(f"[{record_id}] Failed: {e}", exc_info=True)
             try:
-                await repo.update_processing_status(record_id, "failed")
-            except Exception:
-                logger.error(f"[{record_id}] Could not update status to failed")
+                # Download image from S3
+                logger.info(f"[{record_id}] Downloading from S3: {s3_key}")
+                image_data = await s3.download_image(s3_key)
+
+                result_payload = {"processing_status": "completed"}
+
+                # OCR via Textract
+                ocr_text = ""
+                if ocr_adapter:
+                    try:
+                        ocr_result = await ocr_adapter.extract_text(image_data)
+                        ocr_text = str(ocr_result)
+                        result_payload["texto_ocr"] = ocr_text
+                        logger.info(f"[{record_id}] Textract OCR done, text_length={len(ocr_text)}")
+                    except Exception as e:
+                        logger.warning(f"[{record_id}] Textract OCR failed (non-fatal): {e}")
+
+                # Titan image embedding
+                if titan_adapter:
+                    try:
+                        image_embedding = await titan_adapter.embed_image(image_data)
+                        result_payload["image_embedding"] = image_embedding.to_list()
+                        logger.info(f"[{record_id}] Titan image embedding generated (1024 dims)")
+                    except Exception as e:
+                        logger.warning(f"[{record_id}] Titan image embedding failed (non-fatal): {e}")
+
+                    # Titan text embedding (only if OCR text is non-empty)
+                    if ocr_text.strip():
+                        try:
+                            text_embedding = await titan_adapter.embed_text(ocr_text)
+                            result_payload["text_embedding"] = text_embedding.to_list()
+                            logger.info(f"[{record_id}] Titan text embedding generated (1024 dims)")
+                        except Exception as e:
+                            logger.warning(f"[{record_id}] Titan text embedding failed (non-fatal): {e}")
+
+                # Send results to API
+                resp = await client.patch(
+                    f"/api/v1/batch/{record_id}/complete",
+                    json=result_payload,
+                )
+                resp.raise_for_status()
+
+                completed += 1
+                logger.info(f"[{record_id}] Completed ({completed}/{total})")
+
+            except Exception as e:
+                failed += 1
+                logger.error(f"[{record_id}] Failed: {e}", exc_info=True)
+                try:
+                    await client.patch(
+                        f"/api/v1/batch/{record_id}/complete",
+                        json={"processing_status": "failed"},
+                    )
+                except Exception:
+                    logger.error(f"[{record_id}] Could not update status to failed")
 
     elapsed = time.time() - start_time
     summary = {

@@ -9,6 +9,7 @@ from .instance_routes import router as instance_router
 from .health_routes import router as health_router
 from .ingestion_routes import ingestion_router
 from .search_routes import router as search_router
+from .batch_routes import router as batch_router
 
 __all__ = [
     "messaging_router",
@@ -16,4 +17,5 @@ __all__ = [
     "health_router",
     "ingestion_router",
     "search_router",
+    "batch_router",
 ]

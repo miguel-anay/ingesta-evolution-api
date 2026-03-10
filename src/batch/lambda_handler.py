@@ -2,13 +2,16 @@
 AWS Lambda Handler for Batch Processing
 
 Triggered by EventBridge (cron schedule) or manual invocation.
-Processes all pending images: Textract OCR + Titan embeddings.
+Processes pending images via Textract OCR + Titan embeddings.
+
+Communicates with the FastAPI microservice via HTTP API
+instead of connecting directly to the database.
 
 Lambda Config:
 - Runtime: Python 3.11
 - Timeout: 900 seconds (15 min)
 - Memory: 512 MB (only API calls, no local ML inference)
-- Environment variables: DATABASE_URL, S3_BUCKET_NAME, etc.
+- Environment variables: API_BASE_URL, S3_BUCKET_NAME, etc.
 """
 
 import asyncio
