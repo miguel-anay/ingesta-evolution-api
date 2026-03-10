@@ -53,9 +53,7 @@ services:
 
   # Evolution API (WhatsApp Backend)
   evolution-api:
-    build:
-      context: ./.evolution-api-build
-    image: evolution-api:2.3.7
+    image: k3n5h1n/evolution-api:2.3.7
     container_name: evolution-api
     restart: unless-stopped
     ports:
