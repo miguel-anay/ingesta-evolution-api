@@ -56,7 +56,7 @@ class IngestImagesUseCase:
 
         Args:
             image_source: Port for fetching images from external sources
-            image_storage: Port for storing images to disk
+            image_storage: Port for storing images (filesystem or S3)
             metadata_repository: Port for persisting metadata
         """
         self._image_source = image_source
@@ -116,6 +116,8 @@ class IngestImagesUseCase:
                     instance=instance,
                     source_type=SourceType.CHAT,
                     limit=request.limit,
+                    fecha_desde=request.fecha_desde,
+                    fecha_hasta=request.fecha_hasta,
                 )
                 result = result.merge(chat_result)
 
@@ -126,6 +128,8 @@ class IngestImagesUseCase:
                     instance=instance,
                     source_type=SourceType.STATUS,
                     limit=request.limit,
+                    fecha_desde=request.fecha_desde,
+                    fecha_hasta=request.fecha_hasta,
                 )
                 result = result.merge(status_result)
 
@@ -193,6 +197,8 @@ class IngestImagesUseCase:
         instance: Instance,
         source_type: SourceType,
         limit: Optional[int],
+        fecha_desde=None,
+        fecha_hasta=None,
     ) -> IngestionResult:
         """
         Ingest images from a specific source type for a specific phone number.
@@ -219,12 +225,16 @@ class IngestImagesUseCase:
                 instance_name=instance_name,
                 phone_number=phone_number,
                 limit=limit,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
             )
         else:
             image_iterator = self._image_source.fetch_status_images(
                 instance_name=instance_name,
                 phone_number=phone_number,
                 limit=limit,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
             )
 
         async for raw_image in image_iterator:
@@ -261,6 +271,11 @@ class IngestImagesUseCase:
                     sequential_id=sequential_id,
                 )
 
+                # Compute S3 key if storage supports it
+                s3_key = None
+                if hasattr(self._image_storage, 'get_s3_key'):
+                    s3_key = self._image_storage.get_s3_key(sequential_id)
+
                 # Create and save metadata with instancia field
                 metadata = ImageMetadata(
                     id_secuencial=sequential_id,
@@ -272,6 +287,7 @@ class IngestImagesUseCase:
                     instancia=instance,
                     ruta_archivo=image_path,
                     hash_imagen=image_hash,
+                    s3_key=s3_key,
                 )
 
                 await self._metadata_repository.save(metadata)

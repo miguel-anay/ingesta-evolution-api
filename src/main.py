@@ -18,6 +18,7 @@ from .infrastructure.http.routes import (
     instance_router,
     health_router,
     ingestion_router,
+    search_router,
 )
 from .infrastructure.http.webhooks import webhook_router
 from .infrastructure.http.middleware import (
@@ -44,10 +45,53 @@ async def lifespan(app: FastAPI):
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Evolution API URL: {settings.evolution_api_url}")
 
+    # --- Fase 7.2: Startup tasks ---
+
+    # 1. Run Alembic migrations
+    try:
+        from alembic.config import Config
+        from alembic import command
+
+        alembic_cfg = Config("alembic.ini")
+        if settings.database_url:
+            db_url = settings.database_url
+            if db_url.startswith("postgresql+asyncpg://"):
+                db_url = db_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+            alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations applied successfully")
+    except Exception as e:
+        logger.warning(f"Alembic migrations skipped: {e}")
+
+    # 2. Verify PostgreSQL connection
+    from .infrastructure.http.dependencies import get_database_manager
+    db_manager = get_database_manager()
+    if db_manager:
+        try:
+            from sqlalchemy import text
+            async with db_manager.engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            logger.info("PostgreSQL connection verified")
+        except Exception as e:
+            logger.error(f"PostgreSQL connection failed: {e}")
+
+    # 3. Create S3 bucket if not exists (MinIO in dev)
+    if settings.storage_backend == "s3":
+        from .infrastructure.http.dependencies import get_image_storage
+        storage = get_image_storage()
+        try:
+            await storage.ensure_storage_directory()
+            logger.info(f"S3 bucket '{settings.s3_bucket_name}' ready")
+        except Exception as e:
+            logger.warning(f"S3 bucket setup skipped: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    if db_manager:
+        await db_manager.close()
+        logger.info("Database connections closed")
 
 
 def create_app() -> FastAPI:
@@ -116,6 +160,7 @@ def create_app() -> FastAPI:
     app.include_router(messaging_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/api/v1")
     app.include_router(ingestion_router, prefix="/api/v1")
+    app.include_router(search_router, prefix="/api/v1")
 
     return app
 

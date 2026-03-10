@@ -9,8 +9,75 @@ These are PURE domain objects with NO external dependencies.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
+from typing import Final, Tuple
 import re
+
+
+class ProcessingStatus(Enum):
+    """Status of async processing (OCR + vectorization)."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class OcrText:
+    """Value object for OCR-extracted text."""
+
+    value: str
+
+    MAX_LENGTH: Final[int] = 50000
+
+    def __post_init__(self) -> None:
+        if len(self.value) > self.MAX_LENGTH:
+            object.__setattr__(self, "value", self.value[: self.MAX_LENGTH])
+
+    def __str__(self) -> str:
+        return self.value
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.value or not self.value.strip()
+
+
+@dataclass(frozen=True)
+class ImageEmbedding:
+    """Value object for image embedding vector (1024 dims, Titan Multimodal)."""
+
+    values: Tuple[float, ...]
+
+    EXPECTED_DIMS: Final[int] = 1024
+
+    def __post_init__(self) -> None:
+        if len(self.values) != self.EXPECTED_DIMS:
+            raise ValueError(
+                f"Image embedding must have {self.EXPECTED_DIMS} dimensions, "
+                f"got: {len(self.values)}"
+            )
+
+    def to_list(self) -> list[float]:
+        return list(self.values)
+
+
+@dataclass(frozen=True)
+class TextEmbedding:
+    """Value object for text embedding vector (1024 dims, Titan Multimodal)."""
+
+    values: Tuple[float, ...]
+
+    EXPECTED_DIMS: Final[int] = 1024
+
+    def __post_init__(self) -> None:
+        if len(self.values) != self.EXPECTED_DIMS:
+            raise ValueError(
+                f"Text embedding must have {self.EXPECTED_DIMS} dimensions, "
+                f"got: {len(self.values)}"
+            )
+
+    def to_list(self) -> list[float]:
+        return list(self.values)
 
 
 class SourceType(Enum):

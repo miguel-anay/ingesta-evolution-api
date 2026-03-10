@@ -3,39 +3,59 @@ version: '3.8'
 services:
   # WhatsApp Microservice
   whatsapp-microservice:
+    image: ${WHATSAPP_IMAGE:-whatsapp-microservice:local}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: whatsapp-microservice
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
-      - ENVIRONMENT=production
-      - DEBUG=false
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DEBUG=${DEBUG:-false}
       - HOST=0.0.0.0
-      - PORT=3000
-      - EVOLUTION_API_URL=http://evolution-api:8080
+      - PORT=${PORT:-3000}
+      - EVOLUTION_API_URL=${EVOLUTION_API_URL:-http://evolution-api:8080}
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-your-api-key}
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - LOG_LEVEL=INFO
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/whatsapp_ingestion}
+      - EVOLUTION_DATABASE_URL=${EVOLUTION_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/evolution}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-whatsapp-images}
+      - S3_PREFIX=${S3_PREFIX:-images/}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-minioadmin}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-minioadmin}
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-s3}
+      - BEDROCK_REGION=${BEDROCK_REGION:-us-east-1}
+      - TITAN_MODEL_ID=${TITAN_MODEL_ID:-amazon.titan-embed-image-v1}
+      - EMBEDDINGS_ENABLED=${EMBEDDINGS_ENABLED:-true}
+      - OCR_ENABLED=${OCR_ENABLED:-true}
+      - TEXTRACT_REGION=${TEXTRACT_REGION:-us-east-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
-      - evolution-api
-      - redis
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      evolution-api:
+        condition: service_started
     networks:
       - whatsapp_network
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3000/api/v1/health/live')"]
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:${PORT:-3000}/api/v1/health/live')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
   # Evolution API (WhatsApp Backend)
   evolution-api:
-    image: atendai/evolution-api:latest
+    build:
+      context: ./.evolution-api-build
+    image: evolution-api:2.3.7
     container_name: evolution-api
     restart: unless-stopped
     ports:
@@ -55,9 +75,9 @@ services:
       - RABBITMQ_EXCHANGE_NAME=evolution_exchange
       - WEBSOCKET_ENABLED=true
       - WEBSOCKET_GLOBAL_EVENTS=true
-      - DATABASE_ENABLED=false
+      - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=
+      - DATABASE_CONNECTION_URI=postgresql://postgres:postgres@postgres:5432/evolution
       - STORE_MESSAGES=true
       - STORE_MESSAGE_UP=true
       - STORE_CONTACTS=true
@@ -66,13 +86,40 @@ services:
       - CLEAN_STORE_MESSAGE_UP=true
       - CLEAN_STORE_CONTACTS=true
       - CLEAN_STORE_CHATS=true
+      - CONFIG_SESSION_PHONE_VERSION=${CONFIG_SESSION_PHONE_VERSION:-2.3000.1034566421}
     depends_on:
-      - redis
-      - rabbitmq
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - whatsapp_network
     volumes:
       - evolution_instances:/evolution/instances
+
+  # PostgreSQL Database with pgvector
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: whatsapp-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_MULTIPLE_DATABASES=evolution,whatsapp_ingestion
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+    networks:
+      - whatsapp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Redis Cache
   redis:
@@ -92,7 +139,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # RabbitMQ Message Broker
+  # RabbitMQ (required by Evolution API)
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: whatsapp-rabbitmq
@@ -113,11 +160,35 @@ services:
       timeout: 10s
       retries: 5
 
+  # MinIO (S3-compatible object storage)
+  minio:
+    image: minio/minio:latest
+    container_name: whatsapp-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - whatsapp_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 networks:
   whatsapp_network:
     driver: bridge
 
 volumes:
   evolution_instances:
+  postgres_data:
   redis_data:
   rabbitmq_data:
+  minio_data:

@@ -54,38 +54,49 @@ class ListInstancesUseCase:
         """
         Execute the list instances use case.
 
+        Uses Evolution API as source of truth for instances,
+        enriched with local repository data when available.
+
         Returns:
             Response with all instances and counts
         """
         logger.info("Listing all instances")
 
-        # Get instances from local repository
-        instances = await self._repository.find_all()
-
-        # Get live status from Evolution API for accuracy
+        # Get live instances from Evolution API (source of truth)
         api_instances = await self._gateway.list_instances()
-        api_status_map = {
-            inst.get("instanceName", inst.get("name", "")): inst
-            for inst in api_instances
+
+        # Get local instances for enrichment
+        local_instances = await self._repository.find_all()
+        local_map = {
+            str(inst.name): inst for inst in local_instances
         }
 
         summaries = []
         connected_count = 0
 
-        for instance in instances:
-            # Merge with API status if available
-            api_data = api_status_map.get(str(instance.name), {})
-            is_connected = api_data.get("connectionStatus", {}).get("state") == "open"
+        for api_data in api_instances:
+            name = api_data.get("instanceName", api_data.get("name", ""))
+            connection_status = api_data.get("connectionStatus", "")
+            # connectionStatus can be a string ("open") or dict ({"state": "open"})
+            if isinstance(connection_status, dict):
+                is_connected = connection_status.get("state") == "open"
+            else:
+                is_connected = connection_status == "open"
 
             if is_connected:
                 connected_count += 1
 
+            # Use local data if available for status
+            local_inst = local_map.get(name)
+            status = local_inst.status.value if local_inst else ("active" if is_connected else "inactive")
+            phone = local_inst.phone_number if local_inst else api_data.get("ownerJid", "").split("@")[0] or None
+
             summaries.append(
                 InstanceSummary(
-                    name=str(instance.name),
-                    status=instance.status.value,
+                    name=name,
+                    status=status,
                     connection_state="open" if is_connected else "close",
-                    phone_number=instance.phone_number,
+                    phone_number=phone,
                     is_connected=is_connected,
                 )
             )

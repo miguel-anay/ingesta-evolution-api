@@ -18,6 +18,10 @@ from .value_objects import (
     PhoneNumber,
     UserName,
     Instance,
+    OcrText,
+    ImageEmbedding,
+    TextEmbedding,
+    ProcessingStatus,
 )
 
 
@@ -50,6 +54,12 @@ class ImageMetadata:
     instancia: Instance
     ruta_archivo: ImagePath
     hash_imagen: ImageHash
+    # New fields for OCR + CLIP + S3 pipeline
+    texto_ocr: Optional[OcrText] = None
+    image_embedding: Optional[ImageEmbedding] = None
+    text_embedding: Optional[TextEmbedding] = None
+    processing_status: ProcessingStatus = ProcessingStatus.PENDING
+    s3_key: Optional[str] = None
 
     def __eq__(self, other: object) -> bool:
         """Two metadata entries are equal if they have the same sequential ID."""

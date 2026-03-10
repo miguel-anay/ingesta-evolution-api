@@ -35,16 +35,33 @@ class Settings(BaseSettings):
     evolution_api_key: str = "SUMlung9541"
     evolution_api_timeout: float = 30.0
 
-    # Database (for future use)
-    database_url: Optional[str] = None
+    # Database
+    database_url: str = "postgresql://postgres:postgres@postgres:5432/whatsapp_ingestion"
+
+    # Evolution API Database (for LID resolution)
+    evolution_database_url: str = "postgresql://postgres:postgres@postgres:5432/evolution"
 
     # Redis (for future use)
     redis_url: str = "redis://localhost:6379"
     redis_prefix: str = "whatsapp_ms"
 
-    # RabbitMQ
-    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
-    rabbitmq_exchange: str = "evolution_exchange"
+    # S3 / MinIO
+    s3_bucket_name: str = "whatsapp-images"
+    s3_prefix: str = "images/"
+    s3_region: str = "us-east-1"
+    s3_endpoint_url: Optional[str] = None
+    s3_access_key_id: Optional[str] = None
+    s3_secret_access_key: Optional[str] = None
+    storage_backend: str = "s3"  # "s3" or "filesystem"
+
+    # AWS Bedrock / Titan Embeddings
+    bedrock_region: str = "us-east-1"
+    titan_model_id: str = "amazon.titan-embed-image-v1"
+    embeddings_enabled: bool = True
+
+    # AWS Textract OCR
+    ocr_enabled: bool = True
+    textract_region: str = "us-east-1"
 
     # Logging
     log_level: str = "INFO"

@@ -6,6 +6,7 @@ This is a DRIVEN port (outbound) - the application drives the adapter.
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import List, AsyncIterator, Optional
 
 from ....domain.ingestion.entities import RawImageData
@@ -34,6 +35,8 @@ class IImageSourcePort(ABC):
         instance_name: str,
         phone_number: str,
         limit: Optional[int] = None,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
     ) -> AsyncIterator[RawImageData]:
         """
         Fetch images from chat messages for a specific phone number.
@@ -42,6 +45,8 @@ class IImageSourcePort(ABC):
             instance_name: The WhatsApp instance to fetch from
             phone_number: The phone number to filter messages by (required)
             limit: Maximum number of images to fetch (None for all)
+            fecha_desde: Only fetch messages after this datetime
+            fecha_hasta: Only fetch messages before this datetime
 
         Yields:
             RawImageData objects for each image found from the specified number
@@ -57,6 +62,8 @@ class IImageSourcePort(ABC):
         instance_name: str,
         phone_number: str,
         limit: Optional[int] = None,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
     ) -> AsyncIterator[RawImageData]:
         """
         Fetch images from user status (stories) for a specific phone number.
@@ -65,6 +72,8 @@ class IImageSourcePort(ABC):
             instance_name: The WhatsApp instance to fetch from
             phone_number: The phone number to filter status by (required)
             limit: Maximum number of images to fetch (None for all)
+            fecha_desde: Only fetch messages after this datetime
+            fecha_hasta: Only fetch messages before this datetime
 
         Yields:
             RawImageData objects for each status image found from the specified number

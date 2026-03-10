@@ -1,0 +1,13 @@
+{
+  "Name": "batch-processor-schedule",
+  "Description": "Trigger batch processor Lambda daily at 2:00 AM Colombia (07:00 UTC)",
+  "ScheduleExpression": "cron(0 7 * * ? *)",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Id": "batch-processor-lambda",
+      "Arn": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:whatsapp-batch-processor",
+      "Input": "{\"source\": \"eventbridge\", \"trigger\": \"scheduled\"}"
+    }
+  ]
+}

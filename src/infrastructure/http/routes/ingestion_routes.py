@@ -12,6 +12,7 @@ Both parameters are REQUIRED. The service returns an error if any is missing.
 """
 
 import logging
+from datetime import datetime
 from typing import Annotated, Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -80,6 +81,14 @@ class IngestRequestSchema(BaseModel):
         description="Maximum number of images to process (null for unlimited)",
         ge=1,
         le=10000,
+    )
+    fecha_desde: Optional[datetime] = Field(
+        None,
+        description="Only ingest messages after this date (ISO format, e.g. 2026-03-01T00:00:00)",
+    )
+    fecha_hasta: Optional[datetime] = Field(
+        None,
+        description="Only ingest messages before this date (ISO format, e.g. 2026-03-06T23:59:59)",
     )
 
 
@@ -188,6 +197,8 @@ async def ingest_images(
             instancia=request.instancia,
             source_type=source_type,
             limit=request.limit,
+            fecha_desde=request.fecha_desde,
+            fecha_hasta=request.fecha_hasta,
         )
 
         # Execute use case
@@ -255,12 +266,21 @@ async def ingest_chat_images(
         description="Maximum images to process",
         ge=1,
     ),
+    fecha_desde: Optional[datetime] = Query(
+        None,
+        description="Only ingest messages after this date (ISO format, e.g. 2026-03-01T00:00:00)",
+    ),
+    fecha_hasta: Optional[datetime] = Query(
+        None,
+        description="Only ingest messages before this date (ISO format, e.g. 2026-03-06T23:59:59)",
+    ),
     use_case: IngestChatImagesUseCase = Depends(get_ingest_chat_images_use_case),
 ) -> IngestResponseSchema:
     """Ingest images from chat messages only for a specific phone number."""
     logger.info(
         f"Chat ingestion request: instance={instancia}, "
-        f"phone={numero_celular}, limit={limit}"
+        f"phone={numero_celular}, limit={limit}, "
+        f"desde={fecha_desde}, hasta={fecha_hasta}"
     )
 
     try:
@@ -268,6 +288,8 @@ async def ingest_chat_images(
             numero_celular=numero_celular,
             instancia=instancia,
             limit=limit,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
         )
 
         return IngestResponseSchema(
@@ -325,12 +347,21 @@ async def ingest_status_images(
         description="Maximum images to process",
         ge=1,
     ),
+    fecha_desde: Optional[datetime] = Query(
+        None,
+        description="Only ingest messages after this date (ISO format, e.g. 2026-03-01T00:00:00)",
+    ),
+    fecha_hasta: Optional[datetime] = Query(
+        None,
+        description="Only ingest messages before this date (ISO format, e.g. 2026-03-06T23:59:59)",
+    ),
     use_case: IngestStatusImagesUseCase = Depends(get_ingest_status_images_use_case),
 ) -> IngestResponseSchema:
     """Ingest images from user status only for a specific phone number."""
     logger.info(
         f"Status ingestion request: instance={instancia}, "
-        f"phone={numero_celular}, limit={limit}"
+        f"phone={numero_celular}, limit={limit}, "
+        f"desde={fecha_desde}, hasta={fecha_hasta}"
     )
 
     try:
@@ -338,6 +369,8 @@ async def ingest_status_images(
             numero_celular=numero_celular,
             instancia=instancia,
             limit=limit,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
         )
 
         return IngestResponseSchema(

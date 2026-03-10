@@ -32,6 +32,8 @@ class IngestImagesRequest:
     instancia: str
     source_type: Optional[SourceType] = None  # None means both chat and status
     limit: Optional[int] = None  # None means no limit
+    fecha_desde: Optional[datetime] = None  # Filter: only messages after this date
+    fecha_hasta: Optional[datetime] = None  # Filter: only messages before this date
 
     def __post_init__(self) -> None:
         """Validate request parameters."""
@@ -96,6 +98,12 @@ class ImageMetadataDTO:
     instancia: str
     ruta_archivo: str
     hash_imagen: str
+    # New fields for OCR + CLIP pipeline
+    texto_ocr: Optional[str] = None
+    has_image_embedding: bool = False
+    has_text_embedding: bool = False
+    processing_status: str = "pending"
+    s3_key: Optional[str] = None
 
 
 @dataclass
@@ -166,4 +174,9 @@ def metadata_to_dto(metadata: "ImageMetadata") -> ImageMetadataDTO:
         instancia=str(metadata.instancia),
         ruta_archivo=str(metadata.ruta_archivo),
         hash_imagen=str(metadata.hash_imagen),
+        texto_ocr=str(metadata.texto_ocr) if metadata.texto_ocr else None,
+        has_image_embedding=metadata.image_embedding is not None,
+        has_text_embedding=metadata.text_embedding is not None,
+        processing_status=metadata.processing_status.value,
+        s3_key=metadata.s3_key,
     )

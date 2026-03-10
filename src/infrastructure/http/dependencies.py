@@ -8,8 +8,9 @@ IMPORTANT: This is the ONLY place where concrete implementations
 are instantiated and injected into use cases.
 """
 
+import logging
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends
 
@@ -47,6 +48,9 @@ from ..messaging.rabbitmq import InMemoryEventPublisher
 from ...config.settings import get_settings, Settings
 
 
+logger = logging.getLogger(__name__)
+
+
 # --- Singleton instances ---
 # These are created once and reused across requests
 
@@ -65,26 +69,66 @@ def get_evolution_api_client() -> EvolutionApiClient:
 @lru_cache()
 def get_message_repository() -> InMemoryMessageRepository:
     """Get message repository singleton."""
-    # TODO: Replace with PostgresMessageRepository for production
     return InMemoryMessageRepository()
+
+
+@lru_cache()
+def get_event_publisher() -> InMemoryEventPublisher:
+    """Get event publisher singleton (for messaging use cases)."""
+    return InMemoryEventPublisher()
 
 
 @lru_cache()
 def get_instance_repository() -> InMemoryInstanceRepository:
     """Get instance repository singleton."""
-    # TODO: Replace with PostgresInstanceRepository for production
     return InMemoryInstanceRepository()
 
 
+# --- New infrastructure singletons ---
+
+
 @lru_cache()
-def get_event_publisher() -> InMemoryEventPublisher:
-    """Get event publisher singleton."""
-    # TODO: Replace with RabbitMQEventPublisher for production
-    return InMemoryEventPublisher()
+def get_database_manager():
+    """Get database manager singleton."""
+    settings = get_settings()
+    if not settings.database_url:
+        return None
+    from ..persistence.database import DatabaseManager
+    return DatabaseManager(settings.database_url)
+
+
+@lru_cache()
+def get_vectorizer_adapter():
+    """Get Titan vectorizer adapter singleton (loaded once)."""
+    settings = get_settings()
+    if not settings.embeddings_enabled:
+        return None
+    try:
+        from ..vectorization.titan_adapter import TitanVectorizerAdapter
+        return TitanVectorizerAdapter(
+            region=settings.bedrock_region,
+            model_id=settings.titan_model_id,
+        )
+    except Exception as e:
+        logger.warning(f"Titan vectorizer not available: {e}")
+        return None
+
+
+@lru_cache()
+def get_ocr_adapter():
+    """Get AWS Textract OCR adapter singleton."""
+    settings = get_settings()
+    if not settings.ocr_enabled:
+        return None
+    try:
+        from ..ocr.textract_adapter import TextractOcrAdapter
+        return TextractOcrAdapter(region=settings.textract_region)
+    except Exception as e:
+        logger.warning(f"Textract OCR not available: {e}")
+        return None
 
 
 # --- Adapters ---
-# Created from singleton dependencies
 
 
 def get_whatsapp_adapter(
@@ -212,18 +256,32 @@ def get_delete_instance_use_case(
 
 
 @lru_cache()
-def get_image_storage() -> FileSystemImageStorageAdapter:
-    """Get image storage adapter singleton."""
+def get_image_storage():
+    """Get image storage adapter singleton (S3 or filesystem based on config)."""
     settings = get_settings()
+    if settings.storage_backend == "s3":
+        from ..storage.s3_image_storage import S3ImageStorageAdapter
+        return S3ImageStorageAdapter(
+            bucket_name=settings.s3_bucket_name,
+            prefix=settings.s3_prefix,
+            region=settings.s3_region,
+            endpoint_url=settings.s3_endpoint_url,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key,
+        )
     return FileSystemImageStorageAdapter(
         base_directory=settings.ingestion_images_directory,
     )
 
 
 @lru_cache()
-def get_metadata_repository() -> CsvMetadataRepository:
-    """Get CSV metadata repository singleton."""
+def get_metadata_repository():
+    """Get metadata repository singleton (Postgres or CSV based on config)."""
     settings = get_settings()
+    db_manager = get_database_manager()
+    if db_manager:
+        from ..persistence.repositories.postgres_metadata_repository import PostgresMetadataRepository
+        return PostgresMetadataRepository(db_manager)
     return CsvMetadataRepository(
         csv_file_path=settings.ingestion_metadata_file,
         images_base_directory=settings.ingestion_images_directory,
@@ -234,7 +292,11 @@ def get_image_source(
     client: Annotated[EvolutionApiClient, Depends(get_evolution_api_client)],
 ) -> EvolutionApiImageSourceAdapter:
     """Get Evolution API image source adapter."""
-    return EvolutionApiImageSourceAdapter(client)
+    settings = get_settings()
+    return EvolutionApiImageSourceAdapter(
+        client=client,
+        evolution_db_url=settings.evolution_database_url,
+    )
 
 
 # --- Image Ingestion Use Cases ---
@@ -242,38 +304,32 @@ def get_image_source(
 
 def get_ingest_images_use_case(
     image_source: Annotated[EvolutionApiImageSourceAdapter, Depends(get_image_source)],
-    image_storage: Annotated[FileSystemImageStorageAdapter, Depends(get_image_storage)],
-    metadata_repository: Annotated[CsvMetadataRepository, Depends(get_metadata_repository)],
 ) -> IngestImagesUseCase:
     """Get IngestImagesUseCase with injected dependencies."""
     return IngestImagesUseCase(
         image_source=image_source,
-        image_storage=image_storage,
-        metadata_repository=metadata_repository,
+        image_storage=get_image_storage(),
+        metadata_repository=get_metadata_repository(),
     )
 
 
 def get_ingest_chat_images_use_case(
     image_source: Annotated[EvolutionApiImageSourceAdapter, Depends(get_image_source)],
-    image_storage: Annotated[FileSystemImageStorageAdapter, Depends(get_image_storage)],
-    metadata_repository: Annotated[CsvMetadataRepository, Depends(get_metadata_repository)],
 ) -> IngestChatImagesUseCase:
     """Get IngestChatImagesUseCase with injected dependencies."""
     return IngestChatImagesUseCase(
         image_source=image_source,
-        image_storage=image_storage,
-        metadata_repository=metadata_repository,
+        image_storage=get_image_storage(),
+        metadata_repository=get_metadata_repository(),
     )
 
 
 def get_ingest_status_images_use_case(
     image_source: Annotated[EvolutionApiImageSourceAdapter, Depends(get_image_source)],
-    image_storage: Annotated[FileSystemImageStorageAdapter, Depends(get_image_storage)],
-    metadata_repository: Annotated[CsvMetadataRepository, Depends(get_metadata_repository)],
 ) -> IngestStatusImagesUseCase:
     """Get IngestStatusImagesUseCase with injected dependencies."""
     return IngestStatusImagesUseCase(
         image_source=image_source,
-        image_storage=image_storage,
-        metadata_repository=metadata_repository,
+        image_storage=get_image_storage(),
+        metadata_repository=get_metadata_repository(),
     )

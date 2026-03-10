@@ -1,0 +1,25 @@
+{
+  "Name": "batch-processor-nightly",
+  "Description": "Trigger batch processor every night at 2:00 AM Colombia time (UTC-5 = 07:00 UTC)",
+  "ScheduleExpression": "cron(0 7 * * ? *)",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Id": "batch-processor-fargate",
+      "Arn": "arn:aws:ecs:us-east-1:ACCOUNT_ID:cluster/ingesta-cluster",
+      "RoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsEventsRole",
+      "EcsParameters": {
+        "TaskDefinitionArn": "arn:aws:ecs:us-east-1:ACCOUNT_ID:task-definition/batch-processor",
+        "TaskCount": 1,
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "awsvpcConfiguration": {
+            "Subnets": ["subnet-XXXXXXXX"],
+            "SecurityGroups": ["sg-XXXXXXXX"],
+            "AssignPublicIp": "ENABLED"
+          }
+        }
+      }
+    }
+  ]
+}

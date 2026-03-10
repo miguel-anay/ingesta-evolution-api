@@ -162,3 +162,27 @@ class MissingRequiredParameterError(IngestionError):
             details=f"Parameter: {parameter_name}",
         )
         self.parameter_name = parameter_name
+
+
+class OcrError(IngestionError):
+    """Raised when OCR text extraction fails."""
+
+    def __init__(self, reason: str, message_id: Optional[str] = None):
+        super().__init__(
+            message="OCR text extraction failed",
+            details=reason,
+        )
+        self.reason = reason
+        self.message_id = message_id
+
+
+class VectorizationError(IngestionError):
+    """Raised when vector embedding generation fails."""
+
+    def __init__(self, reason: str, vector_type: str = "image"):
+        super().__init__(
+            message=f"Vectorization failed for {vector_type}",
+            details=reason,
+        )
+        self.reason = reason
+        self.vector_type = vector_type

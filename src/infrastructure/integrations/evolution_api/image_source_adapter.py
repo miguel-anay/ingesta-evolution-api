@@ -6,9 +6,10 @@ for fetching images from Evolution API.
 """
 
 import logging
+import json
 import base64
 import re
-from typing import AsyncIterator, List, Optional, Dict, Any
+from typing import AsyncIterator, List, Optional, Dict, Any, Set
 from datetime import datetime
 
 from ....application.ingestion.ports import IImageSourcePort
@@ -53,14 +54,17 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
         "image/bmp",
     }
 
-    def __init__(self, client: EvolutionApiClient) -> None:
+    def __init__(self, client: EvolutionApiClient, evolution_db_url: Optional[str] = None) -> None:
         """
         Initialize the adapter.
 
         Args:
             client: The Evolution API HTTP client
+            evolution_db_url: Connection string for Evolution API's database (for LID resolution)
         """
         self._client = client
+        self._evolution_db_url = evolution_db_url
+        self._instance_id_cache: Dict[str, str] = {}
 
     def _normalize_phone_number(self, phone: str) -> str:
         """Normalize phone number by removing non-digit characters."""
@@ -77,26 +81,183 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
         jid_phone = self._extract_phone_from_jid(jid)
         return normalized_phone == jid_phone
 
+    async def _get_instance_id(self, instance_name: str) -> Optional[str]:
+        """Get Evolution API instance UUID from instance name."""
+        if instance_name in self._instance_id_cache:
+            return self._instance_id_cache[instance_name]
+
+        try:
+            instances = await self._client.list_instances()
+            if isinstance(instances, list):
+                for inst in instances:
+                    name = inst.get("name", inst.get("instanceName", ""))
+                    if name == instance_name:
+                        inst_id = inst.get("id", "")
+                        if inst_id:
+                            self._instance_id_cache[instance_name] = inst_id
+                            return inst_id
+        except Exception as e:
+            logger.warning(f"Could not get instance ID: {e}")
+        return None
+
+    async def _resolve_lid_via_db(self, instance_name: str, phone: str) -> Optional[str]:
+        """
+        Resolve phone → LID by querying Evolution API's database.
+
+        Uses the participantAlt field in group messages to find the LID
+        corresponding to a phone number.
+        """
+        if not self._evolution_db_url:
+            return None
+
+        instance_id = await self._get_instance_id(instance_name)
+        if not instance_id:
+            return None
+
+        normalized = self._normalize_phone_number(phone)
+        phone_jid = f"{normalized}@s.whatsapp.net"
+
+        try:
+            import asyncpg
+            conn = await asyncpg.connect(self._evolution_db_url)
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT DISTINCT key->>'participant' as lid
+                    FROM "Message"
+                    WHERE key->>'participantAlt' = $1
+                    AND "instanceId" = $2
+                    LIMIT 1
+                    """,
+                    phone_jid, instance_id,
+                )
+
+                if row and row['lid']:
+                    lid = row['lid']
+                    logger.info(f"Resolved {phone} -> {lid} via Evolution DB (participantAlt)")
+                    return lid
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.warning(f"Could not resolve LID via Evolution DB: {e}")
+
+        return None
+
+    async def _fetch_image_messages_from_db(
+        self,
+        instance_name: str,
+        phone: str,
+        lid: Optional[str] = None,
+        limit: int = 500,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch image messages from Evolution DB for a phone number.
+
+        Searches both group messages (via participantAlt) and
+        1-to-1 messages (via resolved LID).
+        Supports date range filtering via messageTimestamp.
+        """
+        if not self._evolution_db_url:
+            return []
+
+        instance_id = await self._get_instance_id(instance_name)
+        if not instance_id:
+            return []
+
+        normalized = self._normalize_phone_number(phone)
+        phone_jid = f"{normalized}@s.whatsapp.net"
+
+        # Build date filter clauses
+        date_clauses = ""
+        params: list = [instance_id, phone_jid]
+        param_idx = 3
+
+        if fecha_desde:
+            ts_desde = int(fecha_desde.timestamp())
+            date_clauses += f' AND "messageTimestamp" >= ${param_idx}'
+            params.append(ts_desde)
+            param_idx += 1
+
+        if fecha_hasta:
+            ts_hasta = int(fecha_hasta.timestamp())
+            date_clauses += f' AND "messageTimestamp" <= ${param_idx}'
+            params.append(ts_hasta)
+            param_idx += 1
+
+        try:
+            import asyncpg
+            conn = await asyncpg.connect(self._evolution_db_url)
+            try:
+                if lid:
+                    query = f"""
+                        SELECT key::text as key_json, "pushName", "messageTimestamp",
+                               message::text as message_json
+                        FROM "Message"
+                        WHERE "messageType" = 'imageMessage'
+                        AND "instanceId" = $1
+                        AND (
+                            key->>'participantAlt' = $2
+                            OR (key->>'remoteJid' = ${param_idx} AND key->>'fromMe' = 'false')
+                        )
+                        {date_clauses}
+                        ORDER BY "messageTimestamp" DESC
+                        LIMIT ${param_idx + 1}
+                    """
+                    params.extend([lid, limit])
+                else:
+                    query = f"""
+                        SELECT key::text as key_json, "pushName", "messageTimestamp",
+                               message::text as message_json
+                        FROM "Message"
+                        WHERE "messageType" = 'imageMessage'
+                        AND "instanceId" = $1
+                        AND key->>'participantAlt' = $2
+                        {date_clauses}
+                        ORDER BY "messageTimestamp" DESC
+                        LIMIT ${param_idx}
+                    """
+                    params.append(limit)
+
+                rows = await conn.fetch(query, *params)
+
+                result = []
+                for row in rows:
+                    msg = {
+                        'key': json.loads(row['key_json']),
+                        'pushName': row['pushName'] or "",
+                        'messageTimestamp': row['messageTimestamp'],
+                        'message': json.loads(row['message_json']),
+                    }
+                    result.append(msg)
+
+                logger.info(
+                    f"Found {len(result)} image messages for {phone} via Evolution DB "
+                    f"(lid={lid}, desde={fecha_desde}, hasta={fecha_hasta})"
+                )
+                return result
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.warning(f"Could not fetch images from Evolution DB: {e}")
+            return []
+
     async def _resolve_jid_for_phone(
         self, instance_name: str, phone_number: str
     ) -> str:
         """
         Resolve the actual remoteJid for a phone number.
 
-        Some WhatsApp contacts use LID addressing (e.g., 12345@lid)
-        instead of the standard format (e.g., 5199...@s.whatsapp.net).
-        This method checks the chats list to find the real JID.
-
-        Args:
-            instance_name: WhatsApp instance
-            phone_number: Phone number to resolve
-
-        Returns:
-            The actual remoteJid (could be @s.whatsapp.net or @lid format)
+        Strategies (in order):
+        1. Check chats API for standard JID or remoteJidAlt match
+        2. Query Evolution DB for LID mapping (via participantAlt in group messages)
+        3. Fallback to standard JID format
         """
         normalized = self._normalize_phone_number(phone_number)
         standard_jid = f"{normalized}@s.whatsapp.net"
 
+        # Strategy 1: Check chats API
         try:
             chats = await self._get_chats(instance_name)
 
@@ -106,11 +267,9 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
 
                 remote_jid = chat.get("remoteJid", "") or chat.get("id", "")
 
-                # Check direct match with standard JID
                 if remote_jid == standard_jid:
                     return standard_jid
 
-                # Check if phone number appears in remoteJidAlt of lastMessage
                 last_msg = chat.get("lastMessage", {})
                 if isinstance(last_msg, dict):
                     key = last_msg.get("key", {})
@@ -122,30 +281,51 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
                             )
                             return remote_jid
 
-                # Check pushName or name containing the phone number
-                # (fallback for some API versions)
-                if normalized in str(chat):
-                    if remote_jid and "@" in remote_jid:
-                        logger.info(
-                            f"Phone {phone_number} resolved to JID: {remote_jid}"
-                        )
-                        return remote_jid
-
         except Exception as e:
-            logger.warning(f"Could not resolve JID for {phone_number}: {e}")
+            logger.warning(f"Could not resolve JID via chats API: {e}")
 
-        # Fallback to standard format
+        # Strategy 2: Query Evolution DB for LID mapping
+        lid = await self._resolve_lid_via_db(instance_name, phone_number)
+        if lid:
+            return lid
+
+        # Strategy 3: Fallback to standard format
         logger.debug(f"Using standard JID for {phone_number}: {standard_jid}")
         return standard_jid
+
+    def _is_within_date_range(
+        self,
+        message: Dict[str, Any],
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
+    ) -> bool:
+        """Check if a message's timestamp falls within the date range."""
+        if not fecha_desde and not fecha_hasta:
+            return True
+
+        msg_ts = self._extract_timestamp(message)
+
+        if fecha_desde and msg_ts < fecha_desde:
+            return False
+        if fecha_hasta and msg_ts > fecha_hasta:
+            return False
+        return True
 
     async def fetch_chat_images(
         self,
         instance_name: str,
         phone_number: str,
         limit: Optional[int] = None,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
     ) -> AsyncIterator[RawImageData]:
         """
         Fetch images from chat messages for a specific phone number.
+
+        Uses a multi-strategy approach:
+        1. Try API-based message fetching via resolved JID
+        2. If no results, query Evolution DB directly for image messages
+           (handles LID addressing and group messages)
 
         Args:
             instance_name: The WhatsApp instance to fetch from
@@ -167,30 +347,33 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
 
             logger.info(f"Resolved JID for {phone_number}: {target_jid}")
 
-            # Get messages for this specific chat only
+            # Strategy 1: Get messages via API for the resolved JID
             messages = await self._get_messages(instance_name, target_jid)
             images_yielded = 0
-
+            seen_message_ids: Set[str] = set()
             image_messages_found = 0
+            skipped_by_date = 0
 
             for message in messages:
                 if limit and images_yielded >= limit:
                     break
 
-                # Verify the message belongs to the target chat
                 key = message.get("key", {})
                 remote_jid = key.get("remoteJid", "")
+                msg_id = key.get("id", "")
 
-                # Match by phone number OR by resolved JID (for LID addressing)
                 if remote_jid != target_jid and not self._phone_matches_jid(phone_number, remote_jid):
                     continue
 
-                # Check if this message contains an image
+                # Filter by date range
+                if not self._is_within_date_range(message, fecha_desde, fecha_hasta):
+                    skipped_by_date += 1
+                    continue
+
                 msg_content = message.get("message", {})
                 if isinstance(msg_content, dict) and msg_content.get("imageMessage"):
                     image_messages_found += 1
 
-                # Check if this is an image message
                 raw_image = await self._process_message(
                     instance_name=instance_name,
                     message=message,
@@ -199,13 +382,61 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
                 )
 
                 if raw_image:
+                    seen_message_ids.add(msg_id)
                     yield raw_image
                     images_yielded += 1
 
             logger.info(
-                f"Chat images for phone {phone_number}: "
-                f"found {image_messages_found} image messages, "
-                f"successfully downloaded {images_yielded}"
+                f"API strategy: {image_messages_found} image messages, "
+                f"{images_yielded} downloaded, {skipped_by_date} skipped by date "
+                f"for {phone_number}"
+            )
+
+            # Strategy 2: Query Evolution DB for additional images
+            # (group messages + LID chats not found via API)
+            if self._evolution_db_url:
+                remaining_limit = (limit - images_yielded) if limit else None
+                if remaining_limit is None or remaining_limit > 0:
+                    lid = target_jid if target_jid.endswith("@lid") else None
+                    db_messages = await self._fetch_image_messages_from_db(
+                        instance_name=instance_name,
+                        phone=phone_number,
+                        lid=lid,
+                        limit=remaining_limit or 500,
+                        fecha_desde=fecha_desde,
+                        fecha_hasta=fecha_hasta,
+                    )
+
+                    db_images_yielded = 0
+                    for message in db_messages:
+                        if limit and (images_yielded + db_images_yielded) >= limit:
+                            break
+
+                        msg_id = message.get("key", {}).get("id", "")
+                        if msg_id in seen_message_ids:
+                            continue
+
+                        raw_image = await self._process_message(
+                            instance_name=instance_name,
+                            message=message,
+                            source_type=SourceType.CHAT,
+                            request_phone_number=phone_number,
+                        )
+
+                        if raw_image:
+                            seen_message_ids.add(msg_id)
+                            yield raw_image
+                            db_images_yielded += 1
+
+                    if db_images_yielded > 0:
+                        logger.info(
+                            f"DB strategy: {db_images_yielded} additional images "
+                            f"for {phone_number}"
+                        )
+                    images_yielded += db_images_yielded
+
+            logger.info(
+                f"Total chat images for {phone_number}: {images_yielded} downloaded"
             )
 
         except EvolutionApiError as e:
@@ -226,6 +457,8 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
         instance_name: str,
         phone_number: str,
         limit: Optional[int] = None,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
     ) -> AsyncIterator[RawImageData]:
         """
         Fetch images from user status (stories) for a specific phone number.
@@ -234,6 +467,8 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
             instance_name: The WhatsApp instance to fetch from
             phone_number: The phone number to filter status by (required)
             limit: Maximum number of images to fetch
+            fecha_desde: Only fetch messages after this datetime
+            fecha_hasta: Only fetch messages before this datetime
 
         Yields:
             RawImageData for each status image found from the specified number
@@ -283,6 +518,10 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
                 )
 
                 if not matches:
+                    continue
+
+                # Filter by date range
+                if not self._is_within_date_range(status, fecha_desde, fecha_hasta):
                     continue
 
                 # Process each status entry

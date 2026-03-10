@@ -9,6 +9,7 @@ Per PROJECT_SPECS.md, the ingestion REQUIRES:
 """
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from ....domain.ingestion.value_objects import SourceType
@@ -57,6 +58,8 @@ class IngestChatImagesUseCase:
         numero_celular: str,
         instancia: str,
         limit: Optional[int] = None,
+        fecha_desde: Optional[datetime] = None,
+        fecha_hasta: Optional[datetime] = None,
     ) -> IngestImagesResponse:
         """
         Execute chat image ingestion for a specific phone number.
@@ -65,13 +68,15 @@ class IngestChatImagesUseCase:
             numero_celular: Phone number to filter images from (required)
             instancia: WhatsApp instance to fetch from (required)
             limit: Maximum number of images to process
+            fecha_desde: Only fetch messages after this datetime
+            fecha_hasta: Only fetch messages before this datetime
 
         Returns:
             Response containing results of the ingestion
         """
         logger.info(
             f"Starting chat image ingestion for instance: {instancia}, "
-            f"phone: {numero_celular}"
+            f"phone: {numero_celular}, desde: {fecha_desde}, hasta: {fecha_hasta}"
         )
 
         request = IngestImagesRequest(
@@ -79,6 +84,8 @@ class IngestChatImagesUseCase:
             instancia=instancia,
             source_type=SourceType.CHAT,
             limit=limit,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
         )
 
         return await self._ingest_use_case.execute(request)

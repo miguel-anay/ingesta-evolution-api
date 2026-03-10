@@ -1,0 +1,43 @@
+{
+  "FunctionName": "whatsapp-batch-processor",
+  "Runtime": "python3.11",
+  "Handler": "src.batch.lambda_handler.handler",
+  "Description": "Processes pending images: Textract OCR + Titan embeddings (1024 dims)",
+  "Timeout": 900,
+  "MemorySize": 512,
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/lambda-batch-processor-role",
+  "Environment": {
+    "Variables": {
+      "OCR_ENABLED": "true",
+      "EMBEDDINGS_ENABLED": "true",
+      "STORAGE_BACKEND": "s3",
+      "LOG_LEVEL": "INFO"
+    }
+  },
+  "VpcConfig": {
+    "SubnetIds": ["subnet-XXXXX"],
+    "SecurityGroupIds": ["sg-XXXXX"]
+  },
+  "Tags": {
+    "Project": "whatsapp-ingestion",
+    "Component": "batch-processor"
+  },
+  "_comments": {
+    "secrets_via_ssm": [
+      "DATABASE_URL → /batch-processor/DATABASE_URL",
+      "S3_BUCKET_NAME → /batch-processor/S3_BUCKET_NAME",
+      "S3_PREFIX → /batch-processor/S3_PREFIX",
+      "S3_REGION → /batch-processor/S3_REGION",
+      "TEXTRACT_REGION → /batch-processor/TEXTRACT_REGION",
+      "BEDROCK_REGION → /batch-processor/BEDROCK_REGION"
+    ],
+    "iam_permissions_required": [
+      "textract:DetectDocumentText",
+      "bedrock:InvokeModel (amazon.titan-embed-image-v1)",
+      "s3:GetObject, s3:PutObject on whatsapp-images bucket",
+      "ssm:GetParameter on /batch-processor/*",
+      "rds-db:connect (if using IAM auth) or VPC access to PostgreSQL"
+    ],
+    "eventbridge_rule": "See eventbridge-lambda-rule.json"
+  }
+}

@@ -1,3 +1,6 @@
+# CI/CD (uncomment when ready to enable GitHub Actions)
+.github/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -52,9 +55,9 @@ coverage.xml
 dmypy.json
 
 # Environment
-.env.local
-.env.*.local
-*.local.env
+.env
+.env.*
+!.env.example
 
 # Logs
 *.log
@@ -87,3 +90,5 @@ mcp-server/
 
 # Project specific
 nul
+.evolution-api-build/
+.claude/
