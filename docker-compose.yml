@@ -21,11 +21,9 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/whatsapp_ingestion}
       - EVOLUTION_DATABASE_URL=${EVOLUTION_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/evolution}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-whatsapp-images}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-whatsapp-images-prod}
       - S3_PREFIX=${S3_PREFIX:-images/}
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-minioadmin}
-      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-minioadmin}
+      - S3_REGION=${S3_REGION:-us-east-1}
       - STORAGE_BACKEND=${STORAGE_BACKEND:-s3}
       - BEDROCK_REGION=${BEDROCK_REGION:-us-east-1}
       - TITAN_MODEL_ID=${TITAN_MODEL_ID:-amazon.titan-embed-image-v1}
@@ -38,8 +36,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
       evolution-api:
         condition: service_started
     networks:
@@ -158,28 +154,6 @@ services:
       timeout: 10s
       retries: 5
 
-  # MinIO (S3-compatible object storage)
-  minio:
-    image: minio/minio:latest
-    container_name: whatsapp-minio
-    restart: unless-stopped
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-    networks:
-      - whatsapp_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
 networks:
   whatsapp_network:
     driver: bridge
@@ -189,4 +163,3 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-  minio_data:
