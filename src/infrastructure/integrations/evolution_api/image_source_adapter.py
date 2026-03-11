@@ -300,10 +300,20 @@ class EvolutionApiImageSourceAdapter(IImageSourcePort):
         fecha_hasta: Optional[datetime] = None,
     ) -> bool:
         """Check if a message's timestamp falls within the date range."""
+        from datetime import timezone
+
         if not fecha_desde and not fecha_hasta:
             return True
 
         msg_ts = self._extract_timestamp(message)
+
+        # Ensure both sides are timezone-aware for comparison
+        if msg_ts.tzinfo is None:
+            msg_ts = msg_ts.replace(tzinfo=timezone.utc)
+        if fecha_desde and fecha_desde.tzinfo is None:
+            fecha_desde = fecha_desde.replace(tzinfo=timezone.utc)
+        if fecha_hasta and fecha_hasta.tzinfo is None:
+            fecha_hasta = fecha_hasta.replace(tzinfo=timezone.utc)
 
         if fecha_desde and msg_ts < fecha_desde:
             return False
